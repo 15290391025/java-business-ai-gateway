@@ -20,7 +20,7 @@ public class BeanValidationAiCommandValidator implements AiCommandValidator {
     public ValidationResult validate(Object command) {
         Set<ConstraintViolation<Object>> violations = validator.validate(command);
         if (violations.isEmpty()) {
-            return ValidationResult.valid();
+            return ValidationResult.ok();
         }
 
         List<String> fields = violations.stream()
@@ -33,6 +33,6 @@ public class BeanValidationAiCommandValidator implements AiCommandValidator {
             .findFirst()
             .orElse("参数校验失败");
 
-        return ValidationResult.invalid(fields, message);
+        return ValidationResult.fail(fields, message);
     }
 }

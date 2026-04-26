@@ -4,7 +4,6 @@ public class NoopAiCommandValidator implements AiCommandValidator {
 
     @Override
     public ValidationResult validate(Object command) {
-        return ValidationResult.valid();
+        return ValidationResult.ok();
     }
 }
-

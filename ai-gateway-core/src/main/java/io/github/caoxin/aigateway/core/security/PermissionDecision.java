@@ -5,12 +5,11 @@ public record PermissionDecision(
     String reason
 ) {
 
-    public static PermissionDecision allowed() {
+    public static PermissionDecision allow() {
         return new PermissionDecision(true, "");
     }
 
-    public static PermissionDecision denied(String reason) {
+    public static PermissionDecision deny(String reason) {
         return new PermissionDecision(false, reason);
     }
 }
-

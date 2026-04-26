@@ -8,9 +8,8 @@ public class DefaultAiPermissionEvaluator implements AiPermissionEvaluator {
     @Override
     public PermissionDecision check(AiUserContext user, AiCapability capability, Object command) {
         if (user.hasPermission(capability.permission())) {
-            return PermissionDecision.allowed();
+            return PermissionDecision.allow();
         }
-        return PermissionDecision.denied("缺少权限: " + capability.permission());
+        return PermissionDecision.deny("缺少权限: " + capability.permission());
     }
 }
-

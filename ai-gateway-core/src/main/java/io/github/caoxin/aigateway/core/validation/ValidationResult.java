@@ -8,12 +8,11 @@ public record ValidationResult(
     String message
 ) {
 
-    public static ValidationResult valid() {
+    public static ValidationResult ok() {
         return new ValidationResult(true, List.of(), "");
     }
 
-    public static ValidationResult invalid(List<String> missingFields, String message) {
+    public static ValidationResult fail(List<String> missingFields, String message) {
         return new ValidationResult(false, missingFields, message);
     }
 }
-

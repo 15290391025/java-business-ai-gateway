@@ -9,6 +9,7 @@
 - `ai-gateway-annotations`：业务能力声明注解。
 - `ai-gateway-core`：能力注册表、路由、参数绑定、权限、确认、审计和调用链。
 - `ai-gateway-spring-boot-autoconfigure`：Spring Boot 自动配置和 `/ai/*` HTTP 入口。
+- `ai-gateway-security-spring`：Spring Security 权限和用户上下文适配。
 - `ai-gateway-spring-boot-starter`：业务项目接入用 starter。
 - `ai-gateway-example-order`：订单查询和取消订单示例。
 
@@ -25,6 +26,7 @@
 - 绑定 Command 参数。
 - Bean Validation 参数校验。
 - 权限校验和高风险确认。
+- 可选 Spring Security 适配，从当前 `Authentication` 读取用户和 authorities。
 - 确认时执行冻结后的 action snapshot。
 - 审计记录。
 
@@ -32,8 +34,42 @@
 
 - 真正的 LLM 路由。
 - JDBC/Redis 持久化确认和审计。
-- Spring Security / Sa-Token 深度适配。
+- Spring Security 方法安全表达式深度集成。
+- Sa-Token 适配。
 - OpenTelemetry trace。
+
+## Spring Security 适配
+
+业务项目如果已经使用 Spring Security，可以额外引入：
+
+```xml
+<dependency>
+    <groupId>io.github.caoxin</groupId>
+    <artifactId>ai-gateway-security-spring</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+该模块会在 Spring Security 存在时自动注册：
+
+- `SpringSecurityAiPermissionEvaluator`：用当前 `Authentication` 的 authorities 校验 `@AiPermission`。
+- `SpringSecurityAiUserContextResolver`：用当前认证用户生成 `AiUserContext`。
+
+权限匹配规则：
+
+- `@AiPermission("order:cancel")` 可以匹配 authority `order:cancel`。
+- 也可以匹配 OAuth2 scope 风格的 authority `SCOPE_order:cancel`。
+- 租户默认从请求头 `X-Tenant-Id` 读取。
+
+如果要关闭该适配：
+
+```yaml
+ai:
+  gateway:
+    security:
+      spring:
+        enabled: false
+```
 
 ## 运行示例
 
@@ -89,5 +125,5 @@ curl -X POST http://localhost:8080/ai/confirm \
 1. v0.1：单步 intent 调用闭环和测试覆盖。
 2. v0.2：权限、确认快照和审计闭环。
 3. v0.3：简单多步计划和前一步结果引用。
-4. v0.4：Spring Security 适配、JDBC confirmation/audit。
+4. v0.4：Spring Security 方法安全表达式、JDBC confirmation/audit。
 5. v0.5：Spring AI adapter、trace、回放和模型路由评测。

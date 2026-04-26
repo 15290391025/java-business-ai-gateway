@@ -23,6 +23,7 @@
         <module>ai-gateway-annotations</module>
         <module>ai-gateway-core</module>
         <module>ai-gateway-spring-boot-autoconfigure</module>
+        <module>ai-gateway-security-spring</module>
         <module>ai-gateway-spring-boot-starter</module>
         <module>ai-gateway-example-order</module>
     </modules>
@@ -32,4 +33,3 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 </project>
-

@@ -14,13 +14,14 @@
 
 ## 当前状态
 
-这是早期 v0.1 骨架，当前路由器是确定性的关键词路由器，目的是先打通安全调用闭环。后续再接 Spring AI、LangChain4j 或其他模型适配器。
+这是早期 v0.3 骨架，当前路由器是确定性的关键词路由器，目的是先打通安全调用闭环。后续再接 Spring AI、LangChain4j 或其他模型适配器。
 
 已经覆盖的主链路：
 
 - 显式声明业务能力。
 - 启动时扫描能力并做用户权限过滤。
 - 自然语言输入路由到单个 intent。
+- 简单多步计划，支持 `previous.status == 'NOT_SHIPPED'` 这类前一步结果条件。
 - 绑定 Command 参数。
 - Bean Validation 参数校验。
 - 权限校验和高风险确认。
@@ -30,14 +31,13 @@
 暂未实现：
 
 - 真正的 LLM 路由。
-- 多步 RoutePlan 执行。
 - JDBC/Redis 持久化确认和审计。
 - Spring Security / Sa-Token 深度适配。
 - OpenTelemetry trace。
 
 ## 运行示例
 
-当前环境还没有安装 Java 和 Maven。安装 JDK 17+ 和 Maven 后，在项目根目录执行：
+安装 JDK 17+ 和 Maven 后，在项目根目录执行：
 
 ```bash
 mvn clean package
@@ -60,6 +60,14 @@ curl -X POST http://localhost:8080/ai/chat \
   -d '{"sessionId":"s1","userInput":"帮我取消订单 20260426001"}'
 ```
 
+条件取消会先查询订单状态，只有前一步结果满足 `NOT_SHIPPED` 时才创建取消确认：
+
+```bash
+curl -X POST http://localhost:8080/ai/chat \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"s1","userInput":"帮我查一下订单 20260426001，如果没发货就取消"}'
+```
+
 再用返回的 `confirmationId` 执行确认：
 
 ```bash
@@ -78,8 +86,8 @@ curl -X POST http://localhost:8080/ai/confirm \
 
 ## 下一步路线
 
-1. v0.1：打磨单步 intent 调用闭环和测试覆盖。
-2. v0.2：加入 Spring Security 适配、JDBC confirmation/audit。
-3. v0.3：加入简单多步计划和前一步结果引用。
-4. v0.4：加入 Spring AI adapter 和结构化模型路由。
-5. v0.5：加入 trace、回放和模型路由评测。
+1. v0.1：单步 intent 调用闭环和测试覆盖。
+2. v0.2：权限、确认快照和审计闭环。
+3. v0.3：简单多步计划和前一步结果引用。
+4. v0.4：Spring Security 适配、JDBC confirmation/audit。
+5. v0.5：Spring AI adapter、trace、回放和模型路由评测。

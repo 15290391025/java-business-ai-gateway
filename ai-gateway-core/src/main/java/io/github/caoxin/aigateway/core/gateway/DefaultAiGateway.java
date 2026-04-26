@@ -24,11 +24,23 @@ import io.github.caoxin.aigateway.core.security.PermissionDecision;
 import io.github.caoxin.aigateway.core.validation.AiCommandValidator;
 import io.github.caoxin.aigateway.core.validation.ValidationResult;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.RecordComponent;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class DefaultAiGateway implements AiGateway {
+
+    private static final Pattern CONDITION_PATTERN = Pattern.compile(
+        "previous\\.([A-Za-z0-9_.]+)\\s*(==|!=)\\s*('([^']*)'|\"([^\"]*)\"|[A-Za-z0-9_.-]+)"
+    );
 
     private final AiCapabilityRegistry registry;
     private final AiIntentRouter router;
@@ -78,54 +90,74 @@ public class DefaultAiGateway implements AiGateway {
             return AiChatResponse.clarification("没有生成可执行步骤", java.util.List.of());
         }
 
-        AiPlanStep step = plan.steps().get(0);
-        Optional<AiCapability> capabilityOptional = registry.find(step.moduleName(), step.intentName());
-        if (capabilityOptional.isEmpty()) {
-            return AiChatResponse.error("能力不存在: " + step.moduleName() + "." + step.intentName());
+        List<AiStepExecutionResult> results = new ArrayList<>();
+        Object previousResult = null;
+
+        for (AiPlanStep step : plan.steps()) {
+            Optional<AiCapability> capabilityOptional = registry.find(step.moduleName(), step.intentName());
+            if (capabilityOptional.isEmpty()) {
+                return AiChatResponse.error("能力不存在: " + step.moduleName() + "." + step.intentName());
+            }
+
+            AiCapability capability = capabilityOptional.get();
+            if (!conditionMatches(step.conditionExpression(), previousResult)) {
+                String reason = "条件不满足: " + step.conditionExpression();
+                results.add(AiStepExecutionResult.skipped(capability.moduleName(), capability.intentName(), reason));
+                audit(context, capability, Map.of("conditionExpression", step.conditionExpression()), null, "SKIPPED", null, reason);
+                continue;
+            }
+
+            Object command = argumentBinder.bind(step.arguments(), capability.commandType());
+
+            ValidationResult validation = commandValidator.validate(command);
+            if (!validation.valid()) {
+                return AiChatResponse.clarification(validation.message(), validation.missingFields());
+            }
+
+            PermissionDecision permission = permissionEvaluator.check(context.user(), capability, command);
+            if (!permission.allowed()) {
+                audit(context, capability, command, null, "PERMISSION_DENIED", null, permission.reason());
+                return AiChatResponse.permissionDenied(permission.reason());
+            }
+
+            PolicyDecision policy = policyEngine.evaluateBeforeInvoke(context, capability, command);
+            if (policy.denied()) {
+                audit(context, capability, command, null, "DENIED", null, policy.reason());
+                return AiChatResponse.denied(policy.reason());
+            }
+
+            if (capability.requiresConfirmation() || policy.requiresConfirmation()) {
+                AiConfirmationSnapshot snapshot = confirmationManager.create(context, capability, command, policy);
+                audit(context, capability, command, snapshot.confirmationId(), "CONFIRMATION_REQUIRED", null, snapshot.reason());
+                return AiChatResponse.confirmationRequired(
+                    confirmationMessage(results, snapshot.reason()),
+                    snapshot.confirmationId(),
+                    capability.moduleName(),
+                    capability.intentName(),
+                    capability.riskLevel(),
+                    argumentBinder.preview(command),
+                    snapshot.expiresAt()
+                );
+            }
+
+            AiInvokeResult invokeResult = invoker.invoke(capability, command, context);
+            if (!invokeResult.success()) {
+                audit(context, capability, command, null, "FAILED", null, invokeResult.errorMessage());
+                return AiChatResponse.error(invokeResult.errorMessage());
+            }
+
+            previousResult = invokeResult.result();
+            results.add(AiStepExecutionResult.success(capability.moduleName(), capability.intentName(), invokeResult.result()));
+            audit(context, capability, command, null, "SUCCESS", summarize(invokeResult.result()), null);
         }
 
-        AiCapability capability = capabilityOptional.get();
-        Object command = argumentBinder.bind(step.arguments(), capability.commandType());
-
-        ValidationResult validation = commandValidator.validate(command);
-        if (!validation.valid()) {
-            return AiChatResponse.clarification(validation.message(), validation.missingFields());
+        if (results.isEmpty()) {
+            return AiChatResponse.actionResult("没有满足执行条件的步骤", plan.moduleName(), null, List.of());
         }
 
-        PermissionDecision permission = permissionEvaluator.check(context.user(), capability, command);
-        if (!permission.allowed()) {
-            audit(context, capability, command, null, "PERMISSION_DENIED", null, permission.reason());
-            return AiChatResponse.permissionDenied(permission.reason());
-        }
-
-        PolicyDecision policy = policyEngine.evaluateBeforeInvoke(context, capability, command);
-        if (policy.denied()) {
-            audit(context, capability, command, null, "DENIED", null, policy.reason());
-            return AiChatResponse.denied(policy.reason());
-        }
-
-        if (capability.requiresConfirmation() || policy.requiresConfirmation()) {
-            AiConfirmationSnapshot snapshot = confirmationManager.create(context, capability, command, policy);
-            audit(context, capability, command, snapshot.confirmationId(), "CONFIRMATION_REQUIRED", null, snapshot.reason());
-            return AiChatResponse.confirmationRequired(
-                snapshot.reason(),
-                snapshot.confirmationId(),
-                capability.moduleName(),
-                capability.intentName(),
-                capability.riskLevel(),
-                argumentBinder.preview(command),
-                snapshot.expiresAt()
-            );
-        }
-
-        AiInvokeResult invokeResult = invoker.invoke(capability, command, context);
-        if (!invokeResult.success()) {
-            audit(context, capability, command, null, "FAILED", null, invokeResult.errorMessage());
-            return AiChatResponse.error(invokeResult.errorMessage());
-        }
-
-        audit(context, capability, command, null, "SUCCESS", summarize(invokeResult.result()), null);
-        return AiChatResponse.actionResult("操作已完成", capability.moduleName(), capability.intentName(), invokeResult.result());
+        AiStepExecutionResult lastResult = results.get(results.size() - 1);
+        Object responseResult = results.size() == 1 ? lastResult.result() : List.copyOf(results);
+        return AiChatResponse.actionResult("操作已完成", plan.moduleName(), lastResult.intentName(), responseResult);
     }
 
     @Override
@@ -241,5 +273,101 @@ public class DefaultAiGateway implements AiGateway {
             return json;
         }
         return json.substring(0, 512);
+    }
+
+    private String confirmationMessage(List<AiStepExecutionResult> previousResults, String reason) {
+        if (previousResults.isEmpty()) {
+            return reason;
+        }
+        return "已完成前置步骤；" + reason;
+    }
+
+    private boolean conditionMatches(String conditionExpression, Object previousResult) {
+        if (conditionExpression == null || conditionExpression.isBlank()) {
+            return true;
+        }
+        if (previousResult == null) {
+            return false;
+        }
+
+        Matcher matcher = CONDITION_PATTERN.matcher(conditionExpression.trim());
+        if (!matcher.matches()) {
+            return false;
+        }
+
+        Object actual = readPath(previousResult, matcher.group(1));
+        String operator = matcher.group(2);
+        String expected = expectedValue(matcher);
+        boolean equal = actual != null && expected.equals(String.valueOf(actual));
+        return "==".equals(operator) ? equal : !equal;
+    }
+
+    private String expectedValue(Matcher matcher) {
+        if (matcher.group(4) != null) {
+            return matcher.group(4);
+        }
+        if (matcher.group(5) != null) {
+            return matcher.group(5);
+        }
+        return matcher.group(3);
+    }
+
+    private Object readPath(Object source, String path) {
+        Object current = source;
+        for (String property : path.split("\\.")) {
+            current = readProperty(current, property);
+            if (current == null) {
+                return null;
+            }
+        }
+        return current;
+    }
+
+    private Object readProperty(Object source, String property) {
+        if (source instanceof Map<?, ?> map) {
+            return map.get(property);
+        }
+
+        if (source.getClass().isRecord()) {
+            for (RecordComponent component : source.getClass().getRecordComponents()) {
+                if (component.getName().equals(property)) {
+                    return invokeNoArg(source, component.getAccessor());
+                }
+            }
+        }
+
+        Optional<Method> method = findNoArgMethod(source.getClass(), property)
+            .or(() -> findNoArgMethod(source.getClass(), "get" + Character.toUpperCase(property.charAt(0)) + property.substring(1)));
+        if (method.isPresent()) {
+            return invokeNoArg(source, method.get());
+        }
+
+        try {
+            Field field = source.getClass().getDeclaredField(property);
+            field.setAccessible(true);
+            return field.get(source);
+        } catch (ReflectiveOperationException exception) {
+            return null;
+        }
+    }
+
+    private Optional<Method> findNoArgMethod(Class<?> sourceType, String methodName) {
+        try {
+            Method method = sourceType.getMethod(methodName);
+            if (method.getParameterCount() == 0) {
+                return Optional.of(method);
+            }
+        } catch (NoSuchMethodException exception) {
+            return Optional.empty();
+        }
+        return Optional.empty();
+    }
+
+    private Object invokeNoArg(Object source, Method method) {
+        try {
+            return method.invoke(source);
+        } catch (ReflectiveOperationException exception) {
+            return null;
+        }
     }
 }

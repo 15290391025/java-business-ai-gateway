@@ -33,6 +33,11 @@ public class KeywordIntentRouter implements AiIntentRouter {
             return AiRoutePlan.clarification(context.sessionId(), context.userInput(), "当前用户没有可用的 AI 业务能力");
         }
 
+        Optional<AiRoutePlan> conditionalCancelPlan = conditionalCancelPlan(context, capabilities);
+        if (conditionalCancelPlan.isPresent()) {
+            return conditionalCancelPlan.get();
+        }
+
         Optional<ScoredCapability> selected = capabilities.stream()
             .map(capability -> new ScoredCapability(capability, score(context.userInput(), capability)))
             .filter(scored -> scored.score() > 0)
@@ -62,6 +67,62 @@ public class KeywordIntentRouter implements AiIntentRouter {
             false,
             null
         );
+    }
+
+    private Optional<AiRoutePlan> conditionalCancelPlan(AiExecutionContext context, List<AiCapability> capabilities) {
+        String input = normalize(context.userInput());
+        if (!containsAny(input, "如果", "若", "未发货", "没发货", "not shipped", "if") || !containsAny(input, "取消", "撤销")) {
+            return Optional.empty();
+        }
+
+        Optional<AiCapability> cancelCapability = capabilities.stream()
+            .filter(capability -> containsAny(capability.intentName(), "cancel", "close"))
+            .filter(capability -> score(context.userInput(), capability) >= 0.35)
+            .findFirst();
+
+        if (cancelCapability.isEmpty()) {
+            return Optional.empty();
+        }
+
+        AiCapability cancel = cancelCapability.get();
+        Optional<AiCapability> queryCapability = capabilities.stream()
+            .filter(capability -> capability.moduleName().equals(cancel.moduleName()))
+            .filter(capability -> containsAny(capability.intentName(), "query", "find", "get"))
+            .findFirst();
+
+        if (queryCapability.isEmpty()) {
+            return Optional.empty();
+        }
+
+        AiCapability query = queryCapability.get();
+        AiPlanStep queryStep = new AiPlanStep(
+            UUID.randomUUID().toString(),
+            query.moduleName(),
+            query.intentName(),
+            extractArguments(context.userInput(), query.commandType()),
+            null,
+            query.riskLevel(),
+            query.requiresConfirmation()
+        );
+        AiPlanStep cancelStep = new AiPlanStep(
+            UUID.randomUUID().toString(),
+            cancel.moduleName(),
+            cancel.intentName(),
+            extractArguments(context.userInput(), cancel.commandType()),
+            "previous.status == 'NOT_SHIPPED'",
+            cancel.riskLevel(),
+            cancel.requiresConfirmation()
+        );
+
+        return Optional.of(new AiRoutePlan(
+            context.sessionId(),
+            context.userInput(),
+            cancel.moduleName(),
+            List.of(queryStep, cancelStep),
+            0.85,
+            false,
+            null
+        ));
     }
 
     private double score(String userInput, AiCapability capability) {

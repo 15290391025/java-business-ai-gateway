@@ -70,6 +70,52 @@ class DefaultAiGatewayTest {
     }
 
     @Test
+    void conditionalPlanRunsQueryBeforeCreatingCancelConfirmation() throws Exception {
+        TestOrderAiService service = new TestOrderAiService();
+        DefaultAiGateway gateway = gatewayWith(service);
+        AiUserContext user = user("order:read", "order:cancel");
+
+        AiChatResponse response = gateway.chat(
+            new AiChatRequest("session-1", "帮我查一下订单 20260426001，如果没发货就取消"),
+            user
+        );
+
+        assertThat(response.type()).isEqualTo("confirmation_required");
+        assertThat(response.message()).startsWith("已完成前置步骤");
+        assertThat(response.intentName()).isEqualTo("cancel_order");
+        assertThat(response.argumentsPreview()).containsEntry("orderId", "20260426001");
+        assertThat(service.queryCount).isEqualTo(1);
+        assertThat(service.cancelCount).isZero();
+
+        AiConfirmResponse confirmResponse = gateway.confirm(new AiConfirmRequest(response.confirmationId()), user);
+
+        assertThat(confirmResponse.type()).isEqualTo("executed");
+        assertThat(service.cancelCount).isEqualTo(1);
+    }
+
+    @Test
+    void conditionalPlanSkipsCancelWhenQueryResultDoesNotMatchCondition() throws Exception {
+        TestOrderAiService service = new TestOrderAiService();
+        service.orderStatus = "SHIPPED";
+        DefaultAiGateway gateway = gatewayWith(service);
+
+        AiChatResponse response = gateway.chat(
+            new AiChatRequest("session-1", "帮我查一下订单 20260426001，如果没发货就取消"),
+            user("order:read", "order:cancel")
+        );
+
+        assertThat(response.type()).isEqualTo("action_result");
+        assertThat(service.queryCount).isEqualTo(1);
+        assertThat(service.cancelCount).isZero();
+        assertThat(response.result()).isInstanceOf(List.class);
+        List<?> stepResults = (List<?>) response.result();
+        assertThat(stepResults).hasSize(2);
+        AiStepExecutionResult skipped = (AiStepExecutionResult) stepResults.get(1);
+        assertThat(skipped.intentName()).isEqualTo("cancel_order");
+        assertThat(skipped.status()).isEqualTo("SKIPPED");
+    }
+
+    @Test
     void confirmationCannotBeExecutedTwice() throws Exception {
         TestOrderAiService service = new TestOrderAiService();
         DefaultAiGateway gateway = gatewayWith(service);
@@ -161,11 +207,13 @@ class DefaultAiGatewayTest {
 
         private int cancelCount;
 
+        private String orderStatus = "NOT_SHIPPED";
+
         private CancelOrderCommand lastCancelCommand;
 
         public QueryOrderResult queryOrder(QueryOrderCommand command) {
             queryCount++;
-            return new QueryOrderResult(command.orderId(), "NOT_SHIPPED");
+            return new QueryOrderResult(command.orderId(), orderStatus);
         }
 
         public CancelOrderResult cancelOrder(CancelOrderCommand command) {
@@ -187,4 +235,3 @@ class DefaultAiGatewayTest {
     public record CancelOrderResult(boolean success, String orderId) {
     }
 }
-

@@ -21,6 +21,8 @@ import io.github.caoxin.aigateway.core.router.AiPlanStep;
 import io.github.caoxin.aigateway.core.router.AiRoutePlan;
 import io.github.caoxin.aigateway.core.security.AiPermissionEvaluator;
 import io.github.caoxin.aigateway.core.security.PermissionDecision;
+import io.github.caoxin.aigateway.core.trace.AiTraceEvent;
+import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
 import io.github.caoxin.aigateway.core.validation.AiCommandValidator;
 import io.github.caoxin.aigateway.core.validation.ValidationResult;
 
@@ -51,6 +53,7 @@ public class DefaultAiGateway implements AiGateway {
     private final AiConfirmationManager confirmationManager;
     private final AiCapabilityInvoker invoker;
     private final AiAuditLogger auditLogger;
+    private final AiTraceLogger traceLogger;
     private final ObjectMapper objectMapper;
 
     public DefaultAiGateway(
@@ -63,6 +66,7 @@ public class DefaultAiGateway implements AiGateway {
         AiConfirmationManager confirmationManager,
         AiCapabilityInvoker invoker,
         AiAuditLogger auditLogger,
+        AiTraceLogger traceLogger,
         ObjectMapper objectMapper
     ) {
         this.registry = registry;
@@ -74,13 +78,28 @@ public class DefaultAiGateway implements AiGateway {
         this.confirmationManager = confirmationManager;
         this.invoker = invoker;
         this.auditLogger = auditLogger;
+        this.traceLogger = traceLogger;
         this.objectMapper = objectMapper;
     }
 
     @Override
     public AiChatResponse chat(AiChatRequest request, AiUserContext userContext) {
         AiExecutionContext context = AiExecutionContext.from(request, userContext);
+        long routeStartedAt = System.nanoTime();
         AiRoutePlan plan = router.route(context);
+        trace(
+            context,
+            "ROUTE",
+            plan.moduleName(),
+            null,
+            plan.requiresClarification() ? "CLARIFICATION_REQUIRED" : "ROUTED",
+            elapsedMillis(routeStartedAt),
+            plan.confidence(),
+            Map.of(
+                "stepCount", plan.steps().size(),
+                "requiresClarification", plan.requiresClarification()
+            )
+        );
 
         if (plan.requiresClarification()) {
             return AiChatResponse.clarification(plan.clarificationQuestion(), java.util.List.of());
@@ -104,6 +123,16 @@ public class DefaultAiGateway implements AiGateway {
                 String reason = "条件不满足: " + step.conditionExpression();
                 results.add(AiStepExecutionResult.skipped(capability.moduleName(), capability.intentName(), reason));
                 audit(context, capability, Map.of("conditionExpression", step.conditionExpression()), null, "SKIPPED", null, reason);
+                trace(
+                    context,
+                    "STEP_CONDITION",
+                    capability.moduleName(),
+                    capability.intentName(),
+                    "SKIPPED",
+                    0L,
+                    null,
+                    Map.of("conditionExpression", step.conditionExpression())
+                );
                 continue;
             }
 
@@ -111,24 +140,67 @@ public class DefaultAiGateway implements AiGateway {
 
             ValidationResult validation = commandValidator.validate(command);
             if (!validation.valid()) {
+                trace(
+                    context,
+                    "VALIDATION",
+                    capability.moduleName(),
+                    capability.intentName(),
+                    "FAILED",
+                    0L,
+                    null,
+                    Map.of("missingFields", validation.missingFields())
+                );
                 return AiChatResponse.clarification(validation.message(), validation.missingFields());
             }
 
             PermissionDecision permission = permissionEvaluator.check(context.user(), capability, command);
             if (!permission.allowed()) {
                 audit(context, capability, command, null, "PERMISSION_DENIED", null, permission.reason());
+                trace(
+                    context,
+                    "PERMISSION",
+                    capability.moduleName(),
+                    capability.intentName(),
+                    "DENIED",
+                    0L,
+                    null,
+                    Map.of("reason", permission.reason())
+                );
                 return AiChatResponse.permissionDenied(permission.reason());
             }
 
             PolicyDecision policy = policyEngine.evaluateBeforeInvoke(context, capability, command);
             if (policy.denied()) {
                 audit(context, capability, command, null, "DENIED", null, policy.reason());
+                trace(
+                    context,
+                    "POLICY",
+                    capability.moduleName(),
+                    capability.intentName(),
+                    "DENIED",
+                    0L,
+                    null,
+                    Map.of("reason", policy.reason())
+                );
                 return AiChatResponse.denied(policy.reason());
             }
 
             if (capability.requiresConfirmation() || policy.requiresConfirmation()) {
                 AiConfirmationSnapshot snapshot = confirmationManager.create(context, capability, command, policy);
                 audit(context, capability, command, snapshot.confirmationId(), "CONFIRMATION_REQUIRED", null, snapshot.reason());
+                trace(
+                    context,
+                    "CONFIRMATION",
+                    capability.moduleName(),
+                    capability.intentName(),
+                    "REQUIRED",
+                    0L,
+                    null,
+                    Map.of(
+                        "confirmationId", snapshot.confirmationId(),
+                        "reason", snapshot.reason()
+                    )
+                );
                 return AiChatResponse.confirmationRequired(
                     confirmationMessage(results, snapshot.reason()),
                     snapshot.confirmationId(),
@@ -140,15 +212,36 @@ public class DefaultAiGateway implements AiGateway {
                 );
             }
 
+            long invokeStartedAt = System.nanoTime();
             AiInvokeResult invokeResult = invoker.invoke(capability, command, context);
             if (!invokeResult.success()) {
                 audit(context, capability, command, null, "FAILED", null, invokeResult.errorMessage());
+                trace(
+                    context,
+                    "INVOKE",
+                    capability.moduleName(),
+                    capability.intentName(),
+                    "FAILED",
+                    elapsedMillis(invokeStartedAt),
+                    null,
+                    Map.of("errorMessage", invokeResult.errorMessage())
+                );
                 return AiChatResponse.error(invokeResult.errorMessage());
             }
 
             previousResult = invokeResult.result();
             results.add(AiStepExecutionResult.success(capability.moduleName(), capability.intentName(), invokeResult.result()));
             audit(context, capability, command, null, "SUCCESS", summarize(invokeResult.result()), null);
+            trace(
+                context,
+                "INVOKE",
+                capability.moduleName(),
+                capability.intentName(),
+                "SUCCESS",
+                elapsedMillis(invokeStartedAt),
+                null,
+                Map.of("resultType", invokeResult.result() == null ? "null" : invokeResult.result().getClass().getName())
+            );
         }
 
         if (results.isEmpty()) {
@@ -162,28 +255,98 @@ public class DefaultAiGateway implements AiGateway {
 
     @Override
     public AiConfirmResponse confirm(AiConfirmRequest request, AiUserContext userContext) {
+        long confirmStartedAt = System.nanoTime();
         Optional<AiConfirmationSnapshot> snapshotOptional = confirmationManager.find(request.confirmationId());
         if (snapshotOptional.isEmpty()) {
+            trace(
+                new AiExecutionContext("unknown", "CONFIRMED_ACTION", userContext, Instant.now()),
+                "CONFIRMATION_LOOKUP",
+                null,
+                null,
+                "NOT_FOUND",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of("confirmationId", request.confirmationId())
+            );
             return AiConfirmResponse.notFound(request.confirmationId());
         }
 
         AiConfirmationSnapshot snapshot = snapshotOptional.get();
+        AiExecutionContext lookupContext = new AiExecutionContext(
+            snapshot.sessionId(),
+            "CONFIRMED_ACTION",
+            userContext,
+            Instant.now()
+        );
         if (!snapshot.tenantId().equals(userContext.tenantId()) || !snapshot.userId().equals(userContext.userId())) {
+            trace(
+                lookupContext,
+                "CONFIRMATION_LOOKUP",
+                snapshot.moduleName(),
+                snapshot.intentName(),
+                "DENIED",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of("confirmationId", snapshot.confirmationId())
+            );
             return AiConfirmResponse.denied(snapshot.confirmationId(), "确认记录不属于当前用户或租户");
         }
         if (snapshot.status() == ConfirmationStatus.EXECUTED) {
+            trace(
+                lookupContext,
+                "CONFIRMATION_LOOKUP",
+                snapshot.moduleName(),
+                snapshot.intentName(),
+                "ALREADY_EXECUTED",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of("confirmationId", snapshot.confirmationId())
+            );
             return AiConfirmResponse.alreadyExecuted(snapshot.confirmationId());
         }
         if (snapshot.expiresAt().isBefore(Instant.now())) {
             confirmationManager.save(snapshot.withStatus(ConfirmationStatus.EXPIRED, snapshot.confirmedAt(), snapshot.executedAt()));
+            trace(
+                lookupContext,
+                "CONFIRMATION_LOOKUP",
+                snapshot.moduleName(),
+                snapshot.intentName(),
+                "EXPIRED",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of("confirmationId", snapshot.confirmationId())
+            );
             return AiConfirmResponse.expired(snapshot.confirmationId());
         }
         if (snapshot.status() != ConfirmationStatus.PENDING) {
+            trace(
+                lookupContext,
+                "CONFIRMATION_LOOKUP",
+                snapshot.moduleName(),
+                snapshot.intentName(),
+                "DENIED",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of(
+                    "confirmationId", snapshot.confirmationId(),
+                    "status", snapshot.status().name()
+                )
+            );
             return AiConfirmResponse.denied(snapshot.confirmationId(), "确认记录状态不可执行: " + snapshot.status());
         }
 
         Optional<AiCapability> capabilityOptional = registry.find(snapshot.moduleName(), snapshot.intentName());
         if (capabilityOptional.isEmpty()) {
+            trace(
+                lookupContext,
+                "CONFIRMATION_LOOKUP",
+                snapshot.moduleName(),
+                snapshot.intentName(),
+                "CAPABILITY_NOT_FOUND",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of("confirmationId", snapshot.confirmationId())
+            );
             return AiConfirmResponse.denied(snapshot.confirmationId(), "能力不存在");
         }
 
@@ -200,6 +363,16 @@ public class DefaultAiGateway implements AiGateway {
         if (!permission.allowed()) {
             confirmationManager.save(snapshot.withStatus(ConfirmationStatus.DENIED, Instant.now(), null));
             audit(context, capability, command, snapshot.confirmationId(), "PERMISSION_DENIED", null, permission.reason());
+            trace(
+                context,
+                "CONFIRMATION_PERMISSION",
+                capability.moduleName(),
+                capability.intentName(),
+                "DENIED",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of("confirmationId", snapshot.confirmationId(), "reason", permission.reason())
+            );
             return AiConfirmResponse.denied(snapshot.confirmationId(), permission.reason());
         }
 
@@ -207,19 +380,50 @@ public class DefaultAiGateway implements AiGateway {
         if (!validation.valid()) {
             confirmationManager.save(snapshot.withStatus(ConfirmationStatus.DENIED, Instant.now(), null));
             audit(context, capability, command, snapshot.confirmationId(), "VALIDATION_FAILED", null, validation.message());
+            trace(
+                context,
+                "CONFIRMATION_VALIDATION",
+                capability.moduleName(),
+                capability.intentName(),
+                "FAILED",
+                elapsedMillis(confirmStartedAt),
+                null,
+                Map.of("confirmationId", snapshot.confirmationId(), "missingFields", validation.missingFields())
+            );
             return AiConfirmResponse.denied(snapshot.confirmationId(), validation.message());
         }
 
+        long invokeStartedAt = System.nanoTime();
         AiInvokeResult invokeResult = invoker.invoke(capability, command, context);
         Instant executedAt = Instant.now();
         confirmationManager.save(snapshot.withStatus(ConfirmationStatus.EXECUTED, executedAt, executedAt));
 
         if (!invokeResult.success()) {
             audit(context, capability, command, snapshot.confirmationId(), "FAILED", null, invokeResult.errorMessage());
+            trace(
+                context,
+                "CONFIRMATION_INVOKE",
+                capability.moduleName(),
+                capability.intentName(),
+                "FAILED",
+                elapsedMillis(invokeStartedAt),
+                null,
+                Map.of("confirmationId", snapshot.confirmationId(), "errorMessage", invokeResult.errorMessage())
+            );
             return AiConfirmResponse.denied(snapshot.confirmationId(), invokeResult.errorMessage());
         }
 
         audit(context, capability, command, snapshot.confirmationId(), "SUCCESS", summarize(invokeResult.result()), null);
+        trace(
+            context,
+            "CONFIRMATION_INVOKE",
+            capability.moduleName(),
+            capability.intentName(),
+            "SUCCESS",
+            elapsedMillis(invokeStartedAt),
+            null,
+            Map.of("confirmationId", snapshot.confirmationId())
+        );
         return AiConfirmResponse.executed(snapshot.confirmationId(), invokeResult.result());
     }
 
@@ -273,6 +477,40 @@ public class DefaultAiGateway implements AiGateway {
             return json;
         }
         return json.substring(0, 512);
+    }
+
+    private void trace(
+        AiExecutionContext context,
+        String phase,
+        String moduleName,
+        String intentName,
+        String status,
+        Long latencyMs,
+        Double routeConfidence,
+        Map<String, ?> metadata
+    ) {
+        traceLogger.record(new AiTraceEvent(
+            UUID.randomUUID().toString(),
+            context.user().tenantId(),
+            context.user().userId(),
+            context.sessionId(),
+            phase,
+            moduleName,
+            intentName,
+            status,
+            null,
+            null,
+            null,
+            null,
+            latencyMs,
+            routeConfidence,
+            toJson(metadata == null ? Map.of() : metadata),
+            Instant.now()
+        ));
+    }
+
+    private long elapsedMillis(long startedAtNanos) {
+        return Math.max(0L, (System.nanoTime() - startedAtNanos) / 1_000_000L);
     }
 
     private String confirmationMessage(List<AiStepExecutionResult> previousResults, String reason) {

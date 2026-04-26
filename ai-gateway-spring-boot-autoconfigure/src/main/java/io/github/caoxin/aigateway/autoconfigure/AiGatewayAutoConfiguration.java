@@ -21,6 +21,8 @@ import io.github.caoxin.aigateway.core.router.AiIntentRouter;
 import io.github.caoxin.aigateway.core.router.KeywordIntentRouter;
 import io.github.caoxin.aigateway.core.security.AiPermissionEvaluator;
 import io.github.caoxin.aigateway.core.security.DefaultAiPermissionEvaluator;
+import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
+import io.github.caoxin.aigateway.core.trace.InMemoryAiTraceLogger;
 import io.github.caoxin.aigateway.core.validation.AiCommandValidator;
 import io.github.caoxin.aigateway.core.validation.NoopAiCommandValidator;
 import jakarta.validation.Validator;
@@ -114,6 +116,12 @@ public class AiGatewayAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public AiTraceLogger aiTraceLogger() {
+        return new InMemoryAiTraceLogger();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public AiCommandValidator aiCommandValidator(ObjectProvider<Validator> validatorProvider) {
         Validator validator = validatorProvider.getIfAvailable();
         if (validator == null) {
@@ -134,6 +142,7 @@ public class AiGatewayAutoConfiguration {
         AiConfirmationManager confirmationManager,
         AiCapabilityInvoker invoker,
         AiAuditLogger auditLogger,
+        AiTraceLogger traceLogger,
         ObjectMapper objectMapper
     ) {
         return new DefaultAiGateway(
@@ -146,6 +155,7 @@ public class AiGatewayAutoConfiguration {
             confirmationManager,
             invoker,
             auditLogger,
+            traceLogger,
             objectMapper
         );
     }
@@ -163,8 +173,9 @@ public class AiGatewayAutoConfiguration {
         AiGateway aiGateway,
         AiCapabilityRegistry registry,
         AiAuditLogger auditLogger,
+        AiTraceLogger traceLogger,
         AiUserContextResolver userContextResolver
     ) {
-        return new AiGatewayController(aiGateway, registry, auditLogger, userContextResolver);
+        return new AiGatewayController(aiGateway, registry, auditLogger, traceLogger, userContextResolver);
     }
 }

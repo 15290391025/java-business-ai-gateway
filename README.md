@@ -10,7 +10,7 @@
 - `ai-gateway-core`：能力注册表、路由、参数绑定、权限、确认、审计和调用链。
 - `ai-gateway-spring-boot-autoconfigure`：Spring Boot 自动配置和 `/ai/*` HTTP 入口。
 - `ai-gateway-security-spring`：Spring Security 权限和用户上下文适配。
-- `ai-gateway-jdbc`：确认快照和审计日志的 JDBC 持久化。
+- `ai-gateway-jdbc`：确认快照、审计日志和技术 Trace 的 JDBC 持久化。
 - `ai-gateway-spring-boot-starter`：业务项目接入用 starter。
 - `ai-gateway-example-order`：订单查询和取消订单示例。
 
@@ -30,7 +30,8 @@
 - 可选 Spring Security 适配，从当前 `Authentication` 读取用户和 authorities。
 - 确认时执行冻结后的 action snapshot。
 - 审计记录。
-- 可选 JDBC 持久化确认快照和审计日志。
+- 技术 Trace，记录路由、确认、权限、策略、调用等阶段。
+- 可选 JDBC 持久化确认快照、审计日志和 Trace。
 
 暂未实现：
 
@@ -38,7 +39,7 @@
 - Redis 持久化确认和审计。
 - Spring Security 方法安全表达式深度集成。
 - Sa-Token 适配。
-- OpenTelemetry trace。
+- OpenTelemetry 集成。
 
 ## Spring Security 适配
 
@@ -75,7 +76,7 @@ ai:
 
 ## JDBC 持久化
 
-默认实现使用内存保存确认快照和审计日志。业务项目如果需要落库，可以额外引入：
+默认实现使用内存保存确认快照、审计日志和 Trace。业务项目如果需要落库，可以额外引入：
 
 ```xml
 <dependency>
@@ -89,6 +90,7 @@ ai:
 
 - `JdbcAiConfirmationRepository`：保存 `ai_confirmation`。
 - `JdbcAiAuditLogger`：保存 `ai_audit_log`。
+- `JdbcAiTraceLogger`：保存 `ai_trace`。
 
 表结构在模块内置的 `io/github/caoxin/aigateway/jdbc/schema.sql`。开发环境可以开启自动建表：
 
@@ -100,6 +102,26 @@ ai:
 ```
 
 生产环境建议由 Flyway、Liquibase 或数据库变更流程管理表结构。
+
+## Trace
+
+Trace 面向排障和后续回放评测，不替代业务审计。当前会记录这些阶段：
+
+- `ROUTE`：路由结果、置信度、步骤数量。
+- `VALIDATION`：参数校验失败。
+- `PERMISSION`：权限拒绝。
+- `POLICY`：策略拒绝。
+- `CONFIRMATION`：创建确认快照。
+- `INVOKE`：业务能力调用成功或失败。
+- `CONFIRMATION_*`：确认执行阶段的查询、校验和调用。
+
+Web 入口提供调试接口：
+
+```bash
+curl http://localhost:8080/ai/trace
+```
+
+默认只记录结构化阶段信息和元数据，不记录完整 prompt / completion。
 
 ## 运行示例
 
@@ -156,4 +178,4 @@ curl -X POST http://localhost:8080/ai/confirm \
 2. v0.2：权限、确认快照和审计闭环。
 3. v0.3：简单多步计划和前一步结果引用。
 4. v0.4：Spring Security 方法安全表达式、Redis persistence。
-5. v0.5：Spring AI adapter、trace、回放和模型路由评测。
+5. v0.5：Spring AI adapter、OpenTelemetry、回放和模型路由评测。

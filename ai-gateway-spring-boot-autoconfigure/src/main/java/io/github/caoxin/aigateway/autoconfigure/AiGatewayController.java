@@ -10,6 +10,8 @@ import io.github.caoxin.aigateway.core.gateway.AiChatResponse;
 import io.github.caoxin.aigateway.core.gateway.AiConfirmRequest;
 import io.github.caoxin.aigateway.core.gateway.AiConfirmResponse;
 import io.github.caoxin.aigateway.core.gateway.AiGateway;
+import io.github.caoxin.aigateway.core.trace.AiTraceEvent;
+import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -26,17 +28,20 @@ public class AiGatewayController {
     private final AiGateway aiGateway;
     private final AiCapabilityRegistry registry;
     private final AiAuditLogger auditLogger;
+    private final AiTraceLogger traceLogger;
     private final AiUserContextResolver userContextResolver;
 
     public AiGatewayController(
         AiGateway aiGateway,
         AiCapabilityRegistry registry,
         AiAuditLogger auditLogger,
+        AiTraceLogger traceLogger,
         AiUserContextResolver userContextResolver
     ) {
         this.aiGateway = aiGateway;
         this.registry = registry;
         this.auditLogger = auditLogger;
+        this.traceLogger = traceLogger;
         this.userContextResolver = userContextResolver;
     }
 
@@ -60,5 +65,9 @@ public class AiGatewayController {
     public List<AiAuditEvent> audit() {
         return auditLogger.list();
     }
-}
 
+    @GetMapping("/trace")
+    public List<AiTraceEvent> trace() {
+        return traceLogger.list();
+    }
+}

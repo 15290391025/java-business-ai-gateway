@@ -3,6 +3,7 @@ package io.github.caoxin.aigateway.jdbc;
 import io.github.caoxin.aigateway.core.audit.AiAuditLogger;
 import io.github.caoxin.aigateway.core.confirmation.AiConfirmationRepository;
 import io.github.caoxin.aigateway.core.gateway.AiGateway;
+import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -43,6 +44,12 @@ public class JdbcAiGatewayAutoConfiguration {
     @ConditionalOnMissingBean
     public AiAuditLogger jdbcAiAuditLogger(JdbcTemplate aiGatewayJdbcTemplate) {
         return new JdbcAiAuditLogger(aiGatewayJdbcTemplate);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AiTraceLogger jdbcAiTraceLogger(JdbcTemplate aiGatewayJdbcTemplate) {
+        return new JdbcAiTraceLogger(aiGatewayJdbcTemplate);
     }
 
     @Bean

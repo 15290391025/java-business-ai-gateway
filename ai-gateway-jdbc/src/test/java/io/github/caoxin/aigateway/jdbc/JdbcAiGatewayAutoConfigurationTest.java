@@ -2,6 +2,7 @@ package io.github.caoxin.aigateway.jdbc;
 
 import io.github.caoxin.aigateway.core.audit.AiAuditLogger;
 import io.github.caoxin.aigateway.core.confirmation.AiConfirmationRepository;
+import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -24,8 +25,10 @@ class JdbcAiGatewayAutoConfigurationTest {
             assertThat(context).hasSingleBean(JdbcTemplate.class);
             assertThat(context).hasSingleBean(AiConfirmationRepository.class);
             assertThat(context).hasSingleBean(AiAuditLogger.class);
+            assertThat(context).hasSingleBean(AiTraceLogger.class);
             assertThat(context.getBean(AiConfirmationRepository.class)).isInstanceOf(JdbcAiConfirmationRepository.class);
             assertThat(context.getBean(AiAuditLogger.class)).isInstanceOf(JdbcAiAuditLogger.class);
+            assertThat(context.getBean(AiTraceLogger.class)).isInstanceOf(JdbcAiTraceLogger.class);
         });
     }
 
@@ -36,6 +39,7 @@ class JdbcAiGatewayAutoConfigurationTest {
             .run(context -> {
                 assertThat(context).doesNotHaveBean(AiConfirmationRepository.class);
                 assertThat(context).doesNotHaveBean(AiAuditLogger.class);
+                assertThat(context).doesNotHaveBean(AiTraceLogger.class);
             });
     }
 
@@ -48,6 +52,7 @@ class JdbcAiGatewayAutoConfigurationTest {
 
                 assertThat(jdbcTemplate.queryForObject("select count(*) from ai_confirmation", Integer.class)).isZero();
                 assertThat(jdbcTemplate.queryForObject("select count(*) from ai_audit_log", Integer.class)).isZero();
+                assertThat(jdbcTemplate.queryForObject("select count(*) from ai_trace", Integer.class)).isZero();
             });
     }
 

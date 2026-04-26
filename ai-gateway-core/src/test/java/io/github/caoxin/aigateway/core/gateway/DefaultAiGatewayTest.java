@@ -14,6 +14,8 @@ import io.github.caoxin.aigateway.core.invoke.ReflectionAiCapabilityInvoker;
 import io.github.caoxin.aigateway.core.policy.DefaultAiPolicyEngine;
 import io.github.caoxin.aigateway.core.router.KeywordIntentRouter;
 import io.github.caoxin.aigateway.core.security.DefaultAiPermissionEvaluator;
+import io.github.caoxin.aigateway.core.trace.AiTraceEvent;
+import io.github.caoxin.aigateway.core.trace.InMemoryAiTraceLogger;
 import io.github.caoxin.aigateway.core.validation.NoopAiCommandValidator;
 import org.junit.jupiter.api.Test;
 
@@ -133,7 +135,30 @@ class DefaultAiGatewayTest {
         assertThat(service.cancelCount).isEqualTo(1);
     }
 
+    @Test
+    void chatRecordsRouteAndInvokeTrace() throws Exception {
+        TestOrderAiService service = new TestOrderAiService();
+        InMemoryAiTraceLogger traceLogger = new InMemoryAiTraceLogger();
+        DefaultAiGateway gateway = gatewayWith(service, traceLogger);
+
+        gateway.chat(
+            new AiChatRequest("session-1", "帮我查一下订单 20260426001"),
+            user("order:read", "order:cancel")
+        );
+
+        assertThat(traceLogger.list())
+            .extracting(AiTraceEvent::phase)
+            .containsExactly("ROUTE", "INVOKE");
+        assertThat(traceLogger.list())
+            .extracting(AiTraceEvent::status)
+            .containsExactly("ROUTED", "SUCCESS");
+    }
+
     private DefaultAiGateway gatewayWith(TestOrderAiService service) throws Exception {
+        return gatewayWith(service, new InMemoryAiTraceLogger());
+    }
+
+    private DefaultAiGateway gatewayWith(TestOrderAiService service, InMemoryAiTraceLogger traceLogger) throws Exception {
         AiCapabilityRegistry registry = new DefaultAiCapabilityRegistry();
         registerQueryCapability(registry, service);
         registerCancelCapability(registry, service);
@@ -151,6 +176,7 @@ class DefaultAiGatewayTest {
             new DefaultAiConfirmationManager(new InMemoryAiConfirmationRepository(), objectMapper),
             new ReflectionAiCapabilityInvoker(),
             auditLogger,
+            traceLogger,
             objectMapper
         );
     }

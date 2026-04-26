@@ -35,3 +35,22 @@ create table if not exists ai_audit_log (
     error_message text,
     created_at timestamp not null
 );
+
+create table if not exists ai_trace (
+    id varchar(64) primary key,
+    tenant_id varchar(64),
+    user_id varchar(64),
+    session_id varchar(64),
+    phase varchar(64) not null,
+    module_name varchar(128),
+    intent_name varchar(128),
+    status varchar(64),
+    model_provider varchar(64),
+    model_name varchar(128),
+    input_tokens bigint,
+    output_tokens bigint,
+    latency_ms bigint,
+    route_confidence double precision,
+    metadata_json text,
+    created_at timestamp not null
+);

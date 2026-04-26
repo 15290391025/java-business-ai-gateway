@@ -17,7 +17,7 @@
 
 ## 当前状态
 
-这是早期 v0.4 骨架，默认路由器仍是确定性的关键词路由器，目的是先打通安全调用闭环。项目已经提供 Spring AI 模型适配器，后续会把模型路由器接到该 SPI 上。
+这是早期 v0.5 骨架，已经打通确定性关键词路由和模型辅助路由两种模式。默认 `auto` 模式下，如果 Spring 容器中存在 `AiModelClient`，会使用 `ModelIntentRouter`；否则退回关键词路由器，保证示例项目不依赖外部模型也能运行。
 
 已经覆盖的主链路：
 
@@ -34,14 +34,32 @@
 - 技术 Trace，记录路由、确认、权限、策略、调用等阶段。
 - 可选 JDBC 持久化确认快照、审计日志和 Trace。
 - 可选 Spring AI `ChatClient` 适配为 `AiModelClient`。
+- 可选模型路由器，基于当前用户可见能力生成结构化执行计划，并校验模型返回的模块和 intent 是否在授权能力列表中。
 
 暂未实现：
 
-- 真正的 LLM 路由。
+- 生产级模型路由评测和回放。
 - Redis 持久化确认和审计。
 - Spring Security 方法安全表达式深度集成。
 - Sa-Token 适配。
 - OpenTelemetry 集成。
+
+## 路由器配置
+
+默认配置是 `auto`：
+
+```yaml
+ai:
+  gateway:
+    router:
+      type: auto
+```
+
+可选值：
+
+- `auto`：存在 `AiModelClient` 时使用模型路由器，否则使用关键词路由器。
+- `keyword`：强制使用确定性关键词路由器，适合本地 demo 和无模型环境。
+- `model`：强制使用模型路由器；如果没有 `AiModelClient`，启动时直接失败。
 
 ## Spring AI 适配
 
@@ -64,6 +82,7 @@
 - 支持普通 chat 调用。
 - 支持把模型返回的 JSON object 解析到 `AiModelResponse.structured()`。
 - 如果请求携带 `responseSchema`，会追加结构化 JSON 输出提示。
+- 与 `ai.gateway.router.type=auto` 配合时，可驱动 `ModelIntentRouter` 做能力选择和参数计划生成。
 - 暂不支持 streaming、tool calling、vision 和原生 JSON Schema 强约束。
 
 如果要关闭该适配：
@@ -212,4 +231,4 @@ curl -X POST http://localhost:8080/ai/confirm \
 2. v0.2：权限、确认快照和审计闭环。
 3. v0.3：简单多步计划和前一步结果引用。
 4. v0.4：Spring AI adapter、Spring Security 方法安全表达式。
-5. v0.5：LLM 路由器、OpenTelemetry、Redis persistence、回放和模型路由评测。
+5. v0.5：模型路由器、OpenTelemetry、Redis persistence、回放和模型路由评测。

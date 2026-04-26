@@ -15,10 +15,12 @@ import io.github.caoxin.aigateway.core.invoke.AiCapabilityInvoker;
 import io.github.caoxin.aigateway.core.invoke.ArgumentBinder;
 import io.github.caoxin.aigateway.core.invoke.JacksonArgumentBinder;
 import io.github.caoxin.aigateway.core.invoke.ReflectionAiCapabilityInvoker;
+import io.github.caoxin.aigateway.core.model.AiModelClient;
 import io.github.caoxin.aigateway.core.policy.AiPolicyEngine;
 import io.github.caoxin.aigateway.core.policy.DefaultAiPolicyEngine;
 import io.github.caoxin.aigateway.core.router.AiIntentRouter;
 import io.github.caoxin.aigateway.core.router.KeywordIntentRouter;
+import io.github.caoxin.aigateway.core.router.ModelIntentRouter;
 import io.github.caoxin.aigateway.core.security.AiPermissionEvaluator;
 import io.github.caoxin.aigateway.core.security.DefaultAiPermissionEvaluator;
 import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
@@ -71,7 +73,23 @@ public class AiGatewayAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public AiIntentRouter aiIntentRouter(AiCapabilityRegistry registry) {
+    public AiIntentRouter aiIntentRouter(
+        AiCapabilityRegistry registry,
+        ObjectProvider<AiModelClient> modelClientProvider,
+        ObjectMapper objectMapper,
+        AiGatewayProperties properties
+    ) {
+        AiGatewayProperties.RouterType routerType = properties.getRouter().getType();
+        AiModelClient modelClient = modelClientProvider.getIfAvailable();
+        if (routerType == AiGatewayProperties.RouterType.KEYWORD) {
+            return new KeywordIntentRouter(registry);
+        }
+        if (modelClient != null) {
+            return new ModelIntentRouter(registry, modelClient, objectMapper);
+        }
+        if (routerType == AiGatewayProperties.RouterType.MODEL) {
+            throw new IllegalStateException("ai.gateway.router.type=model requires an AiModelClient bean");
+        }
         return new KeywordIntentRouter(registry);
     }
 

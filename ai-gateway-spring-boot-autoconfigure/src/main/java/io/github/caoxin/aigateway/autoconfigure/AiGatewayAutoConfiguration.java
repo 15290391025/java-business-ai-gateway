@@ -23,6 +23,8 @@ import io.github.caoxin.aigateway.core.router.KeywordIntentRouter;
 import io.github.caoxin.aigateway.core.router.ModelIntentRouter;
 import io.github.caoxin.aigateway.core.security.AiPermissionEvaluator;
 import io.github.caoxin.aigateway.core.security.DefaultAiPermissionEvaluator;
+import io.github.caoxin.aigateway.core.session.AiSessionStateStore;
+import io.github.caoxin.aigateway.core.session.InMemoryAiSessionStateStore;
 import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
 import io.github.caoxin.aigateway.core.trace.InMemoryAiTraceLogger;
 import io.github.caoxin.aigateway.core.validation.AiCommandValidator;
@@ -140,6 +142,12 @@ public class AiGatewayAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public AiSessionStateStore aiSessionStateStore() {
+        return new InMemoryAiSessionStateStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public AiCommandValidator aiCommandValidator(ObjectProvider<Validator> validatorProvider) {
         Validator validator = validatorProvider.getIfAvailable();
         if (validator == null) {
@@ -161,6 +169,7 @@ public class AiGatewayAutoConfiguration {
         AiCapabilityInvoker invoker,
         AiAuditLogger auditLogger,
         AiTraceLogger traceLogger,
+        AiSessionStateStore sessionStateStore,
         ObjectMapper objectMapper
     ) {
         return new DefaultAiGateway(
@@ -174,7 +183,8 @@ public class AiGatewayAutoConfiguration {
             invoker,
             auditLogger,
             traceLogger,
-            objectMapper
+            objectMapper,
+            sessionStateStore
         );
     }
 

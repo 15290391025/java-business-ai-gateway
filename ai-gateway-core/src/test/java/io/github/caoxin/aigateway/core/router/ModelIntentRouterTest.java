@@ -101,6 +101,28 @@ class ModelIntentRouterTest {
     }
 
     @Test
+    void keepsPartialStepWhenModelCanRouteButArgumentsAreMissing() throws Exception {
+        AiCapabilityRegistry registry = registry();
+        Map<String, Object> routeResult = routeResult(
+            0.86,
+            true,
+            List.of(step("order", "cancel_order", Map.of("reason", "用户要求取消"), null))
+        );
+        routeResult.put("clarificationQuestion", "请提供订单号");
+        CapturingModelClient modelClient = new CapturingModelClient(new AiModelResponse(null, routeResult, Map.of()));
+
+        ModelIntentRouter router = new ModelIntentRouter(registry, modelClient, objectMapper);
+
+        AiRoutePlan plan = router.route(context("帮我取消订单"));
+
+        assertThat(plan.requiresClarification()).isFalse();
+        assertThat(plan.steps()).singleElement().satisfies(step -> {
+            assertThat(step.intentName()).isEqualTo("cancel_order");
+            assertThat(step.arguments()).containsEntry("reason", "用户要求取消");
+        });
+    }
+
+    @Test
     void fallsBackWhenModelSelectsCapabilityOutsideAllowedList() throws Exception {
         AiCapabilityRegistry registry = registry();
         CapturingModelClient modelClient = new CapturingModelClient(new AiModelResponse(

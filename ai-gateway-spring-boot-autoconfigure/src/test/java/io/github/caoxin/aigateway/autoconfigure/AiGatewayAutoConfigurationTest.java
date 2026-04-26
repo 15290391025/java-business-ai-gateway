@@ -7,6 +7,7 @@ import io.github.caoxin.aigateway.core.model.AiModelResponse;
 import io.github.caoxin.aigateway.core.router.AiIntentRouter;
 import io.github.caoxin.aigateway.core.router.KeywordIntentRouter;
 import io.github.caoxin.aigateway.core.router.ModelIntentRouter;
+import io.github.caoxin.aigateway.core.session.AiSessionStateStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -28,6 +29,7 @@ class AiGatewayAutoConfigurationTest {
             .withUserConfiguration(ModelClientConfig.class)
             .run(context -> {
                 assertThat(context).hasSingleBean(AiIntentRouter.class);
+                assertThat(context).hasSingleBean(AiSessionStateStore.class);
                 assertThat(context.getBean(AiIntentRouter.class)).isInstanceOf(ModelIntentRouter.class);
             });
     }

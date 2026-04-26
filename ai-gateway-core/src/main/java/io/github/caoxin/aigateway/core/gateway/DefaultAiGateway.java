@@ -21,6 +21,9 @@ import io.github.caoxin.aigateway.core.router.AiPlanStep;
 import io.github.caoxin.aigateway.core.router.AiRoutePlan;
 import io.github.caoxin.aigateway.core.security.AiPermissionEvaluator;
 import io.github.caoxin.aigateway.core.security.PermissionDecision;
+import io.github.caoxin.aigateway.core.session.AiSessionStateStore;
+import io.github.caoxin.aigateway.core.session.InMemoryAiSessionStateStore;
+import io.github.caoxin.aigateway.core.session.PendingClarification;
 import io.github.caoxin.aigateway.core.trace.AiTraceEvent;
 import io.github.caoxin.aigateway.core.trace.AiTraceLogger;
 import io.github.caoxin.aigateway.core.validation.AiCommandValidator;
@@ -29,9 +32,12 @@ import io.github.caoxin.aigateway.core.validation.ValidationResult;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -43,6 +49,9 @@ public class DefaultAiGateway implements AiGateway {
     private static final Pattern CONDITION_PATTERN = Pattern.compile(
         "previous\\.([A-Za-z0-9_.]+)\\s*(==|!=)\\s*('([^']*)'|\"([^\"]*)\"|[A-Za-z0-9_.-]+)"
     );
+    private static final Pattern ALPHA_NUMERIC_TOKEN = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{2,}");
+    private static final Pattern DECIMAL_TOKEN = Pattern.compile("\\d+(?:\\.\\d+)?");
+    private static final long CLARIFICATION_EXPIRE_SECONDS = 600L;
 
     private final AiCapabilityRegistry registry;
     private final AiIntentRouter router;
@@ -55,6 +64,7 @@ public class DefaultAiGateway implements AiGateway {
     private final AiAuditLogger auditLogger;
     private final AiTraceLogger traceLogger;
     private final ObjectMapper objectMapper;
+    private final AiSessionStateStore sessionStateStore;
 
     public DefaultAiGateway(
         AiCapabilityRegistry registry,
@@ -69,6 +79,36 @@ public class DefaultAiGateway implements AiGateway {
         AiTraceLogger traceLogger,
         ObjectMapper objectMapper
     ) {
+        this(
+            registry,
+            router,
+            argumentBinder,
+            commandValidator,
+            permissionEvaluator,
+            policyEngine,
+            confirmationManager,
+            invoker,
+            auditLogger,
+            traceLogger,
+            objectMapper,
+            new InMemoryAiSessionStateStore()
+        );
+    }
+
+    public DefaultAiGateway(
+        AiCapabilityRegistry registry,
+        AiIntentRouter router,
+        ArgumentBinder argumentBinder,
+        AiCommandValidator commandValidator,
+        AiPermissionEvaluator permissionEvaluator,
+        AiPolicyEngine policyEngine,
+        AiConfirmationManager confirmationManager,
+        AiCapabilityInvoker invoker,
+        AiAuditLogger auditLogger,
+        AiTraceLogger traceLogger,
+        ObjectMapper objectMapper,
+        AiSessionStateStore sessionStateStore
+    ) {
         this.registry = registry;
         this.router = router;
         this.argumentBinder = argumentBinder;
@@ -80,11 +120,17 @@ public class DefaultAiGateway implements AiGateway {
         this.auditLogger = auditLogger;
         this.traceLogger = traceLogger;
         this.objectMapper = objectMapper;
+        this.sessionStateStore = sessionStateStore;
     }
 
     @Override
     public AiChatResponse chat(AiChatRequest request, AiUserContext userContext) {
         AiExecutionContext context = AiExecutionContext.from(request, userContext);
+        Optional<PendingClarification> pendingClarification = sessionStateStore.find(context.user(), context.sessionId());
+        if (pendingClarification.isPresent()) {
+            return resumeClarification(context, pendingClarification.get());
+        }
+
         long routeStartedAt = System.nanoTime();
         AiRoutePlan plan = router.route(context);
         trace(
@@ -109,10 +155,18 @@ public class DefaultAiGateway implements AiGateway {
             return AiChatResponse.clarification("没有生成可执行步骤", java.util.List.of());
         }
 
-        List<AiStepExecutionResult> results = new ArrayList<>();
-        Object previousResult = null;
+        return executePlan(context, plan, 0, new ArrayList<>(), null);
+    }
 
-        for (AiPlanStep step : plan.steps()) {
+    private AiChatResponse executePlan(
+        AiExecutionContext context,
+        AiRoutePlan plan,
+        int startStepIndex,
+        List<AiStepExecutionResult> results,
+        Object previousResult
+    ) {
+        for (int stepIndex = startStepIndex; stepIndex < plan.steps().size(); stepIndex++) {
+            AiPlanStep step = plan.steps().get(stepIndex);
             Optional<AiCapability> capabilityOptional = registry.find(step.moduleName(), step.intentName());
             if (capabilityOptional.isEmpty()) {
                 return AiChatResponse.error("能力不存在: " + step.moduleName() + "." + step.intentName());
@@ -150,6 +204,7 @@ public class DefaultAiGateway implements AiGateway {
                     null,
                     Map.of("missingFields", validation.missingFields())
                 );
+                savePendingClarification(context, plan, stepIndex, step, validation, results, previousResult);
                 return AiChatResponse.clarification(validation.message(), validation.missingFields());
             }
 
@@ -251,6 +306,259 @@ public class DefaultAiGateway implements AiGateway {
         AiStepExecutionResult lastResult = results.get(results.size() - 1);
         Object responseResult = results.size() == 1 ? lastResult.result() : List.copyOf(results);
         return AiChatResponse.actionResult("操作已完成", plan.moduleName(), lastResult.intentName(), responseResult);
+    }
+
+    private AiChatResponse resumeClarification(AiExecutionContext context, PendingClarification clarification) {
+        if (clarification.stepIndex() < 0 || clarification.stepIndex() >= clarification.plan().steps().size()) {
+            sessionStateStore.delete(context.user(), context.sessionId());
+            return AiChatResponse.error("待补充的会话状态无效");
+        }
+
+        AiPlanStep originalStep = clarification.plan().steps().get(clarification.stepIndex());
+        Optional<AiCapability> capabilityOptional = registry.find(originalStep.moduleName(), originalStep.intentName());
+        if (capabilityOptional.isEmpty()) {
+            sessionStateStore.delete(context.user(), context.sessionId());
+            return AiChatResponse.error("能力不存在: " + originalStep.moduleName() + "." + originalStep.intentName());
+        }
+
+        AiCapability capability = capabilityOptional.get();
+        Map<String, Object> mergedArguments = new LinkedHashMap<>(clarification.arguments());
+        mergedArguments.putAll(extractClarificationArguments(
+            context.userInput(),
+            clarification.missingFields(),
+            capability.commandType()
+        ));
+
+        AiPlanStep resumedStep = new AiPlanStep(
+            originalStep.stepId(),
+            originalStep.moduleName(),
+            originalStep.intentName(),
+            mergedArguments,
+            originalStep.conditionExpression(),
+            originalStep.riskLevel(),
+            originalStep.requiresConfirmation()
+        );
+
+        List<AiPlanStep> resumedSteps = new ArrayList<>(clarification.plan().steps());
+        resumedSteps.set(clarification.stepIndex(), resumedStep);
+        AiRoutePlan resumedPlan = new AiRoutePlan(
+            clarification.plan().sessionId(),
+            clarification.originalUserInput(),
+            clarification.plan().moduleName(),
+            List.copyOf(resumedSteps),
+            clarification.plan().confidence(),
+            false,
+            null
+        );
+        AiExecutionContext resumedContext = new AiExecutionContext(
+            context.sessionId(),
+            clarification.originalUserInput() + "\n补充信息: " + context.userInput(),
+            context.user(),
+            context.createdAt()
+        );
+
+        sessionStateStore.delete(context.user(), context.sessionId());
+        trace(
+            resumedContext,
+            "SESSION_RESUME",
+            originalStep.moduleName(),
+            originalStep.intentName(),
+            "RESUMED",
+            0L,
+            null,
+            Map.of("missingFields", clarification.missingFields())
+        );
+        return executePlan(
+            resumedContext,
+            resumedPlan,
+            clarification.stepIndex(),
+            new ArrayList<>(clarification.priorResults()),
+            clarification.previousResult()
+        );
+    }
+
+    private void savePendingClarification(
+        AiExecutionContext context,
+        AiRoutePlan plan,
+        int stepIndex,
+        AiPlanStep step,
+        ValidationResult validation,
+        List<AiStepExecutionResult> priorResults,
+        Object previousResult
+    ) {
+        PendingClarification clarification = new PendingClarification(
+            context.user().tenantId(),
+            context.user().userId(),
+            context.sessionId(),
+            context.userInput(),
+            plan,
+            stepIndex,
+            step.arguments(),
+            validation.missingFields(),
+            priorResults,
+            previousResult,
+            Instant.now(),
+            Instant.now().plusSeconds(CLARIFICATION_EXPIRE_SECONDS)
+        );
+        sessionStateStore.save(clarification);
+        trace(
+            context,
+            "SESSION_CLARIFICATION",
+            step.moduleName(),
+            step.intentName(),
+            "PENDING",
+            0L,
+            null,
+            Map.of("missingFields", validation.missingFields())
+        );
+    }
+
+    private Map<String, Object> extractClarificationArguments(
+        String userInput,
+        List<String> missingFields,
+        Class<?> commandType
+    ) {
+        Map<String, Object> extracted = new LinkedHashMap<>();
+        Map<String, Object> explicitArguments = explicitArguments(userInput);
+        for (String missingField : missingFields) {
+            if (explicitArguments.containsKey(missingField)) {
+                extracted.put(missingField, explicitArguments.get(missingField));
+                continue;
+            }
+
+            Optional<Class<?>> fieldType = commandFieldType(commandType, missingField);
+            inferArgumentValue(userInput, missingField, fieldType.orElse(String.class), missingFields.size() == 1)
+                .ifPresent(value -> extracted.put(missingField, value));
+        }
+        return extracted;
+    }
+
+    private Map<String, Object> explicitArguments(String userInput) {
+        if (userInput == null || userInput.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Object value = objectMapper.readValue(userInput, Object.class);
+            if (value instanceof Map<?, ?> map) {
+                Map<String, Object> explicitArguments = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (entry.getKey() != null) {
+                        explicitArguments.put(String.valueOf(entry.getKey()), entry.getValue());
+                    }
+                }
+                return explicitArguments;
+            }
+        } catch (JsonProcessingException exception) {
+            return Map.of();
+        }
+        return Map.of();
+    }
+
+    private Optional<Object> inferArgumentValue(
+        String userInput,
+        String fieldName,
+        Class<?> fieldType,
+        boolean singleMissingField
+    ) {
+        String normalizedFieldName = fieldName.toLowerCase(Locale.ROOT);
+        Optional<String> rawValue = Optional.empty();
+        if (normalizedFieldName.endsWith("id")) {
+            rawValue = firstMatch(ALPHA_NUMERIC_TOKEN, userInput);
+        } else if (looksNumericField(normalizedFieldName, fieldType)) {
+            rawValue = firstMatch(DECIMAL_TOKEN, userInput);
+        } else if (looksFreeTextField(normalizedFieldName) || singleMissingField) {
+            rawValue = Optional.ofNullable(userInput).map(String::trim).filter(value -> !value.isBlank());
+        }
+        return rawValue.map(value -> convertFieldValue(value, fieldType));
+    }
+
+    private boolean looksNumericField(String fieldName, Class<?> fieldType) {
+        return Number.class.isAssignableFrom(wrap(fieldType))
+            || fieldName.contains("amount")
+            || fieldName.contains("price")
+            || fieldName.contains("money")
+            || fieldName.contains("quantity")
+            || fieldName.contains("count");
+    }
+
+    private boolean looksFreeTextField(String fieldName) {
+        return fieldName.contains("reason")
+            || fieldName.contains("remark")
+            || fieldName.contains("comment")
+            || fieldName.contains("address")
+            || fieldName.contains("name");
+    }
+
+    private Object convertFieldValue(String value, Class<?> fieldType) {
+        Class<?> wrappedType = wrap(fieldType);
+        if (String.class.equals(wrappedType)) {
+            return value;
+        }
+        if (Integer.class.equals(wrappedType)) {
+            return Integer.valueOf(value);
+        }
+        if (Long.class.equals(wrappedType)) {
+            return Long.valueOf(value);
+        }
+        if (Double.class.equals(wrappedType)) {
+            return Double.valueOf(value);
+        }
+        if (Float.class.equals(wrappedType)) {
+            return Float.valueOf(value);
+        }
+        if (BigDecimal.class.equals(wrappedType)) {
+            return new BigDecimal(value);
+        }
+        return value;
+    }
+
+    private Class<?> wrap(Class<?> fieldType) {
+        if (!fieldType.isPrimitive()) {
+            return fieldType;
+        }
+        if (int.class.equals(fieldType)) {
+            return Integer.class;
+        }
+        if (long.class.equals(fieldType)) {
+            return Long.class;
+        }
+        if (double.class.equals(fieldType)) {
+            return Double.class;
+        }
+        if (float.class.equals(fieldType)) {
+            return Float.class;
+        }
+        if (boolean.class.equals(fieldType)) {
+            return Boolean.class;
+        }
+        return fieldType;
+    }
+
+    private Optional<Class<?>> commandFieldType(Class<?> commandType, String fieldName) {
+        if (commandType.isRecord()) {
+            for (RecordComponent component : commandType.getRecordComponents()) {
+                if (component.getName().equals(fieldName)) {
+                    return Optional.of(component.getType());
+                }
+            }
+        }
+
+        try {
+            return Optional.of(commandType.getDeclaredField(fieldName).getType());
+        } catch (NoSuchFieldException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<String> firstMatch(Pattern pattern, String source) {
+        if (source == null) {
+            return Optional.empty();
+        }
+        Matcher matcher = pattern.matcher(source);
+        if (matcher.find()) {
+            return Optional.of(matcher.group());
+        }
+        return Optional.empty();
     }
 
     @Override

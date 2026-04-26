@@ -71,7 +71,7 @@ public class ModelIntentRouter implements AiIntentRouter {
         if (routeResult.isEmpty()) {
             return fallbackRouter.route(context);
         }
-        if (booleanValue(routeResult.get("requiresClarification"))) {
+        if (booleanValue(routeResult.get("requiresClarification")) && stepModels(routeResult).isEmpty()) {
             return AiRoutePlan.clarification(
                 context.sessionId(),
                 context.userInput(),
@@ -111,7 +111,9 @@ public class ModelIntentRouter implements AiIntentRouter {
             Only select capabilities from the allowed capability list.
             Do not invent module names, intent names, permissions, or arguments.
             You only create an execution plan; you never claim that an action has been executed.
-            If the request is unclear or required arguments are missing, set requiresClarification=true.
+            If the capability is unclear, set requiresClarification=true.
+            If the capability is clear but required arguments are missing, return the best step with available arguments.
+            The Java gateway will validate arguments and ask the user for missing fields.
             Return only a JSON object.
             """;
     }

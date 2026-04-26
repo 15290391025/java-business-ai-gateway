@@ -27,6 +27,7 @@
 - 简单多步计划，支持 `previous.status == 'NOT_SHIPPED'` 这类前一步结果条件。
 - 绑定 Command 参数。
 - Bean Validation 参数校验。
+- 会话追问闭环：参数缺失时保存待执行计划，下一轮同用户同 session 补参后继续执行。
 - 权限校验和高风险确认。
 - 可选 Spring Security 适配，从当前 `Authentication` 读取用户和 authorities。
 - 确认时执行冻结后的 action snapshot。
@@ -175,6 +176,19 @@ curl http://localhost:8080/ai/trace
 ```
 
 默认只记录结构化阶段信息和元数据，不记录完整 prompt / completion。
+
+## 会话追问
+
+当路由已经确定，但 Command 参数不完整时，网关会保存一份待补充的执行计划：
+
+```text
+用户：帮我取消订单
+系统：缺少参数: orderId
+用户：20260426001
+系统：继续原 cancel_order 计划，并进入高风险确认
+```
+
+追问状态按 `tenantId + userId + sessionId` 隔离，默认内存保存，10 分钟过期。补参成功后会从缺参数的步骤继续执行，不会重新路由到其他 intent。
 
 ## 运行示例
 

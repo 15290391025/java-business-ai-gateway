@@ -16,10 +16,13 @@ import io.github.caoxin.aigateway.core.router.KeywordIntentRouter;
 import io.github.caoxin.aigateway.core.security.DefaultAiPermissionEvaluator;
 import io.github.caoxin.aigateway.core.trace.AiTraceEvent;
 import io.github.caoxin.aigateway.core.trace.InMemoryAiTraceLogger;
+import io.github.caoxin.aigateway.core.validation.AiCommandValidator;
 import io.github.caoxin.aigateway.core.validation.NoopAiCommandValidator;
+import io.github.caoxin.aigateway.core.validation.ValidationResult;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -136,6 +139,75 @@ class DefaultAiGatewayTest {
     }
 
     @Test
+    void clarificationAnswerResumesPendingIntentWithoutRerouting() throws Exception {
+        TestOrderAiService service = new TestOrderAiService();
+        DefaultAiGateway gateway = gatewayWith(service, new InMemoryAiTraceLogger(), new RequiredOrderCommandValidator());
+        AiUserContext user = user("order:read", "order:cancel");
+
+        AiChatResponse clarification = gateway.chat(
+            new AiChatRequest("session-1", "帮我取消订单"),
+            user
+        );
+
+        assertThat(clarification.type()).isEqualTo("clarification_required");
+        assertThat(clarification.missingFields()).containsExactly("orderId");
+        assertThat(service.cancelCount).isZero();
+
+        AiChatResponse resumed = gateway.chat(
+            new AiChatRequest("session-1", "20260426001"),
+            user
+        );
+
+        assertThat(resumed.type()).isEqualTo("confirmation_required");
+        assertThat(resumed.intentName()).isEqualTo("cancel_order");
+        assertThat(resumed.argumentsPreview())
+            .containsEntry("orderId", "20260426001")
+            .containsEntry("reason", "用户通过自然语言操作发起");
+
+        AiConfirmResponse confirmResponse = gateway.confirm(new AiConfirmRequest(resumed.confirmationId()), user);
+
+        assertThat(confirmResponse.type()).isEqualTo("executed");
+        assertThat(service.cancelCount).isEqualTo(1);
+        assertThat(service.lastCancelCommand.orderId()).isEqualTo("20260426001");
+    }
+
+    @Test
+    void unresolvedClarificationKeepsPendingIntentForNextAnswer() throws Exception {
+        TestOrderAiService service = new TestOrderAiService();
+        DefaultAiGateway gateway = gatewayWith(service, new InMemoryAiTraceLogger(), new RequiredOrderCommandValidator());
+        AiUserContext user = user("order:read", "order:cancel");
+
+        gateway.chat(new AiChatRequest("session-1", "帮我取消订单"), user);
+
+        AiChatResponse stillMissing = gateway.chat(new AiChatRequest("session-1", "暂时不知道"), user);
+
+        assertThat(stillMissing.type()).isEqualTo("clarification_required");
+        assertThat(stillMissing.missingFields()).containsExactly("orderId");
+
+        AiChatResponse resumed = gateway.chat(new AiChatRequest("session-1", "订单号是 20260426001"), user);
+
+        assertThat(resumed.type()).isEqualTo("confirmation_required");
+        assertThat(resumed.intentName()).isEqualTo("cancel_order");
+        assertThat(resumed.argumentsPreview()).containsEntry("orderId", "20260426001");
+    }
+
+    @Test
+    void clarificationStateIsScopedByUserAndTenant() throws Exception {
+        TestOrderAiService service = new TestOrderAiService();
+        DefaultAiGateway gateway = gatewayWith(service, new InMemoryAiTraceLogger(), new RequiredOrderCommandValidator());
+        AiUserContext user = user("order:read", "order:cancel");
+        AiUserContext otherUser = new AiUserContext("tenant-1", "user-2", Set.of("order:read", "order:cancel"), Map.of());
+
+        gateway.chat(new AiChatRequest("session-1", "帮我取消订单"), user);
+
+        AiChatResponse otherUserResponse = gateway.chat(new AiChatRequest("session-1", "20260426001"), otherUser);
+
+        assertThat(otherUserResponse.type()).isEqualTo("clarification_required");
+        assertThat(otherUserResponse.intentName()).isNull();
+        assertThat(service.cancelCount).isZero();
+    }
+
+    @Test
     void chatRecordsRouteAndInvokeTrace() throws Exception {
         TestOrderAiService service = new TestOrderAiService();
         InMemoryAiTraceLogger traceLogger = new InMemoryAiTraceLogger();
@@ -159,6 +231,14 @@ class DefaultAiGatewayTest {
     }
 
     private DefaultAiGateway gatewayWith(TestOrderAiService service, InMemoryAiTraceLogger traceLogger) throws Exception {
+        return gatewayWith(service, traceLogger, new NoopAiCommandValidator());
+    }
+
+    private DefaultAiGateway gatewayWith(
+        TestOrderAiService service,
+        InMemoryAiTraceLogger traceLogger,
+        AiCommandValidator commandValidator
+    ) throws Exception {
         AiCapabilityRegistry registry = new DefaultAiCapabilityRegistry();
         registerQueryCapability(registry, service);
         registerCancelCapability(registry, service);
@@ -170,7 +250,7 @@ class DefaultAiGatewayTest {
             registry,
             new KeywordIntentRouter(registry),
             argumentBinder,
-            new NoopAiCommandValidator(),
+            commandValidator,
             new DefaultAiPermissionEvaluator(),
             new DefaultAiPolicyEngine(),
             new DefaultAiConfirmationManager(new InMemoryAiConfirmationRepository(), objectMapper),
@@ -259,5 +339,32 @@ class DefaultAiGatewayTest {
     }
 
     public record CancelOrderResult(boolean success, String orderId) {
+    }
+
+    private static class RequiredOrderCommandValidator implements AiCommandValidator {
+
+        @Override
+        public ValidationResult validate(Object command) {
+            List<String> missingFields = new ArrayList<>();
+            if (command instanceof QueryOrderCommand queryOrderCommand && blank(queryOrderCommand.orderId())) {
+                missingFields.add("orderId");
+            }
+            if (command instanceof CancelOrderCommand cancelOrderCommand) {
+                if (blank(cancelOrderCommand.orderId())) {
+                    missingFields.add("orderId");
+                }
+                if (blank(cancelOrderCommand.reason())) {
+                    missingFields.add("reason");
+                }
+            }
+            if (missingFields.isEmpty()) {
+                return ValidationResult.ok();
+            }
+            return ValidationResult.fail(missingFields, "缺少参数: " + String.join(",", missingFields));
+        }
+
+        private boolean blank(String value) {
+            return value == null || value.isBlank();
+        }
     }
 }

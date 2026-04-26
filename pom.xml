@@ -24,6 +24,7 @@
         <module>ai-gateway-core</module>
         <module>ai-gateway-spring-boot-autoconfigure</module>
         <module>ai-gateway-security-spring</module>
+        <module>ai-gateway-jdbc</module>
         <module>ai-gateway-spring-boot-starter</module>
         <module>ai-gateway-example-order</module>
     </modules>

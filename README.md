@@ -10,6 +10,7 @@
 - `ai-gateway-core`：能力注册表、路由、参数绑定、权限、确认、审计和调用链。
 - `ai-gateway-spring-boot-autoconfigure`：Spring Boot 自动配置和 `/ai/*` HTTP 入口。
 - `ai-gateway-security-spring`：Spring Security 权限和用户上下文适配。
+- `ai-gateway-jdbc`：确认快照和审计日志的 JDBC 持久化。
 - `ai-gateway-spring-boot-starter`：业务项目接入用 starter。
 - `ai-gateway-example-order`：订单查询和取消订单示例。
 
@@ -29,11 +30,12 @@
 - 可选 Spring Security 适配，从当前 `Authentication` 读取用户和 authorities。
 - 确认时执行冻结后的 action snapshot。
 - 审计记录。
+- 可选 JDBC 持久化确认快照和审计日志。
 
 暂未实现：
 
 - 真正的 LLM 路由。
-- JDBC/Redis 持久化确认和审计。
+- Redis 持久化确认和审计。
 - Spring Security 方法安全表达式深度集成。
 - Sa-Token 适配。
 - OpenTelemetry trace。
@@ -70,6 +72,34 @@ ai:
       spring:
         enabled: false
 ```
+
+## JDBC 持久化
+
+默认实现使用内存保存确认快照和审计日志。业务项目如果需要落库，可以额外引入：
+
+```xml
+<dependency>
+    <groupId>io.github.caoxin</groupId>
+    <artifactId>ai-gateway-jdbc</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+当 Spring 容器中存在 `DataSource` 时，该模块会自动注册：
+
+- `JdbcAiConfirmationRepository`：保存 `ai_confirmation`。
+- `JdbcAiAuditLogger`：保存 `ai_audit_log`。
+
+表结构在模块内置的 `io/github/caoxin/aigateway/jdbc/schema.sql`。开发环境可以开启自动建表：
+
+```yaml
+ai:
+  gateway:
+    jdbc:
+      initialize-schema: true
+```
+
+生产环境建议由 Flyway、Liquibase 或数据库变更流程管理表结构。
 
 ## 运行示例
 
@@ -125,5 +155,5 @@ curl -X POST http://localhost:8080/ai/confirm \
 1. v0.1：单步 intent 调用闭环和测试覆盖。
 2. v0.2：权限、确认快照和审计闭环。
 3. v0.3：简单多步计划和前一步结果引用。
-4. v0.4：Spring Security 方法安全表达式、JDBC confirmation/audit。
+4. v0.4：Spring Security 方法安全表达式、Redis persistence。
 5. v0.5：Spring AI adapter、trace、回放和模型路由评测。

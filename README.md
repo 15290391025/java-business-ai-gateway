@@ -9,6 +9,7 @@
 - `ai-gateway-annotations`：业务能力声明注解。
 - `ai-gateway-core`：能力注册表、路由、参数绑定、权限、确认、审计和调用链。
 - `ai-gateway-spring-boot-autoconfigure`：Spring Boot 自动配置和 `/ai/*` HTTP 入口。
+- `ai-gateway-adapter-spring-ai`：Spring AI `ChatClient` 模型适配器。
 - `ai-gateway-security-spring`：Spring Security 权限和用户上下文适配。
 - `ai-gateway-jdbc`：确认快照、审计日志和技术 Trace 的 JDBC 持久化。
 - `ai-gateway-spring-boot-starter`：业务项目接入用 starter。
@@ -16,7 +17,7 @@
 
 ## 当前状态
 
-这是早期 v0.3 骨架，当前路由器是确定性的关键词路由器，目的是先打通安全调用闭环。后续再接 Spring AI、LangChain4j 或其他模型适配器。
+这是早期 v0.4 骨架，默认路由器仍是确定性的关键词路由器，目的是先打通安全调用闭环。项目已经提供 Spring AI 模型适配器，后续会把模型路由器接到该 SPI 上。
 
 已经覆盖的主链路：
 
@@ -32,6 +33,7 @@
 - 审计记录。
 - 技术 Trace，记录路由、确认、权限、策略、调用等阶段。
 - 可选 JDBC 持久化确认快照、审计日志和 Trace。
+- 可选 Spring AI `ChatClient` 适配为 `AiModelClient`。
 
 暂未实现：
 
@@ -40,6 +42,38 @@
 - Spring Security 方法安全表达式深度集成。
 - Sa-Token 适配。
 - OpenTelemetry 集成。
+
+## Spring AI 适配
+
+业务项目如果已经使用 Spring AI，可以额外引入：
+
+```xml
+<dependency>
+    <groupId>io.github.caoxin</groupId>
+    <artifactId>ai-gateway-adapter-spring-ai</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+当 Spring 容器中存在 `ChatClient` 或 `ChatClient.Builder` 时，该模块会自动注册：
+
+- `SpringAiModelClient`：把项目内的 `AiModelClient` SPI 适配到 Spring AI `ChatClient`。
+
+当前能力边界：
+
+- 支持普通 chat 调用。
+- 支持把模型返回的 JSON object 解析到 `AiModelResponse.structured()`。
+- 如果请求携带 `responseSchema`，会追加结构化 JSON 输出提示。
+- 暂不支持 streaming、tool calling、vision 和原生 JSON Schema 强约束。
+
+如果要关闭该适配：
+
+```yaml
+ai:
+  gateway:
+    spring-ai:
+      enabled: false
+```
 
 ## Spring Security 适配
 
@@ -177,5 +211,5 @@ curl -X POST http://localhost:8080/ai/confirm \
 1. v0.1：单步 intent 调用闭环和测试覆盖。
 2. v0.2：权限、确认快照和审计闭环。
 3. v0.3：简单多步计划和前一步结果引用。
-4. v0.4：Spring Security 方法安全表达式、Redis persistence。
-5. v0.5：Spring AI adapter、OpenTelemetry、回放和模型路由评测。
+4. v0.4：Spring AI adapter、Spring Security 方法安全表达式。
+5. v0.5：LLM 路由器、OpenTelemetry、Redis persistence、回放和模型路由评测。

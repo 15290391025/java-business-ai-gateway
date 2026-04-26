@@ -12,6 +12,29 @@
 - `ai-gateway-spring-boot-starter`：业务项目接入用 starter。
 - `ai-gateway-example-order`：订单查询和取消订单示例。
 
+## 当前状态
+
+这是早期 v0.1 骨架，当前路由器是确定性的关键词路由器，目的是先打通安全调用闭环。后续再接 Spring AI、LangChain4j 或其他模型适配器。
+
+已经覆盖的主链路：
+
+- 显式声明业务能力。
+- 启动时扫描能力并做用户权限过滤。
+- 自然语言输入路由到单个 intent。
+- 绑定 Command 参数。
+- Bean Validation 参数校验。
+- 权限校验和高风险确认。
+- 确认时执行冻结后的 action snapshot。
+- 审计记录。
+
+暂未实现：
+
+- 真正的 LLM 路由。
+- 多步 RoutePlan 执行。
+- JDBC/Redis 持久化确认和审计。
+- Spring Security / Sa-Token 深度适配。
+- OpenTelemetry trace。
+
 ## 运行示例
 
 当前环境还没有安装 Java 和 Maven。安装 JDK 17+ 和 Maven 后，在项目根目录执行：
@@ -53,3 +76,10 @@ curl -X POST http://localhost:8080/ai/confirm \
 - 高风险操作确认的是冻结后的 action snapshot，不是自然语言。
 - 执行前后都要留下可审计记录。
 
+## 下一步路线
+
+1. v0.1：打磨单步 intent 调用闭环和测试覆盖。
+2. v0.2：加入 Spring Security 适配、JDBC confirmation/audit。
+3. v0.3：加入简单多步计划和前一步结果引用。
+4. v0.4：加入 Spring AI adapter 和结构化模型路由。
+5. v0.5：加入 trace、回放和模型路由评测。
